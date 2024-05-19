@@ -1,0 +1,89 @@
+version: 2.1
+
+
+parameters:
+  docker-container:
+    type: string
+    default: "strapi-front"
+    description: Docker 8'
+  compose-file-dev:
+    type: string
+    default: "docker-compose.strapi.yml"
+    description: "Docker compose filename"
+  username:
+    type: string
+    default: "aksoft"
+    description: "SSH host username"
+
+jobs:
+  deploy-to-development:
+    docker:
+      - image: circleci/node:14
+      - image: docker:20.10.9
+    steps:
+      - checkout
+      - setup_remote_docker
+      - run:
+          name: Build Docker Image
+          command: |
+            docker build -t << pipeline.parameters.docker-container >>:latest .
+      - run:
+          name: Compress Docker Image
+          command: |
+            docker save << pipeline.parameters.docker-container >>:latest | gzip > << pipeline.parameters.docker-container >>.tar.gz
+      - run: ls -lh
+      - persist_to_workspace:
+          root: .
+          paths:
+            - << pipeline.parameters.docker-container >>.tar.gz
+            - <<pipeline.parameters.compose-file-dev>>
+  transfer-and-run:
+    docker:
+      - image: circleci/node:14
+    steps:
+      - attach_workspace:
+          at: .
+      - run:
+          name: Install SSH And Configure
+          command: |
+            echo $SSH_PRIVATE_KEY_LOCAL | base64 --decode > ./id_rsa
+            chmod 400 id_rsa
+      - run:
+          name: Stop Remote Docker-Compose
+          command: |
+            ssh -o "StrictHostKeyChecking=no" -i ./id_rsa <<pipeline.parameters.username>>@$LOCALHOST '
+            if [ -f <<pipeline.parameters.compose-file-dev>> ]; then
+            docker-compose -f <<pipeline.parameters.compose-file-dev>> down --rmi all
+            rm <<pipeline.parameters.compose-file-dev>>
+            else
+            echo "<<pipeline.parameters.compose-file-dev>> not found"
+            fi
+            '
+      - run:
+          name: Transfer Files
+          command: |
+            scp -o "StrictHostKeyChecking=no" -i ./id_rsa ./<< pipeline.parameters.docker-container >>.tar.gz ./<<pipeline.parameters.compose-file-dev>> <<pipeline.parameters.username>>@$LOCALHOST:~/
+      - run:
+          name: Decompress Docker Image | Run Compose
+          command: |
+            ssh -o "StrictHostKeyChecking=no" -i ./id_rsa <<pipeline.parameters.username>>@$LOCALHOST '
+            gunzip -c ./<< pipeline.parameters.docker-container >>.tar.gz | docker load
+            rm ./<< pipeline.parameters.docker-container >>.tar.gz
+            docker-compose -f <<pipeline.parameters.compose-file-dev>> up -d
+            '
+
+workflows:
+  deploy-to-dev:
+    jobs:
+      - deploy-to-development:
+          filters:
+            branches:
+              only:
+                - main
+      - transfer-and-run:
+          requires:
+            - deploy-to-development
+          filters:
+            branches:
+              only:
+                - main

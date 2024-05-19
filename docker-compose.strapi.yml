@@ -1,0 +1,8 @@
+version: "3.9"
+
+services:
+  frontend:
+    image: strapi-front
+    container_name: strapi-front
+    ports:
+      - 8089:8089
